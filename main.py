@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import math
+import re
 from nmea import gprmc, gpgga, gpvtg, gpgll, dead_reckon
 
 BG      = "#1e1e2e"
@@ -16,6 +17,41 @@ OVERLAY = "#45475a"
 BLACK   = "#11111b"
 
 MAX_TRAIL = 500   # cap trail length so set_path stays fast
+
+
+def _dms_to_decimal(value, is_lat=True):
+    text = value.strip().upper().replace(" ", "")
+    match = re.fullmatch(r"""(\d+(?:\.\d+)?)°(\d+(?:\.\d+)?)'(\d+(?:\.\d+)?)"([NSEW])""", text)
+    if not match:
+        return float(value)
+
+    degrees, minutes, seconds, direction = match.groups()
+    decimal = float(degrees) + float(minutes) / 60 + float(seconds) / 3600
+    if direction in ("S", "W"):
+        decimal *= -1
+
+    limit = 90 if is_lat else 180
+    if abs(decimal) > limit:
+        raise ValueError("coordinate out of range")
+    return decimal
+
+
+def _decimal_to_dms(value, is_lat=True):
+    direction = ("N" if value >= 0 else "S") if is_lat else ("E" if value >= 0 else "W")
+    absolute = abs(value)
+    degrees = int(absolute)
+    minutes_float = (absolute - degrees) * 60
+    minutes = int(minutes_float)
+    seconds = (minutes_float - minutes) * 60
+
+    if round(seconds, 1) >= 60:
+        seconds = 0
+        minutes += 1
+    if minutes >= 60:
+        minutes = 0
+        degrees += 1
+
+    return f'{degrees}°{minutes:02d}\'{seconds:04.1f}"{direction}'
 
 
 def _btn(parent, text, cmd, bg=OVERLAY, fg=FG, font=None, **kw):
@@ -254,10 +290,10 @@ class NMEASimulator(tk.Tk):
         self.geometry("1040x700")
         self.minsize(900, 600)
 
-        self._lat = 51.5074
-        self._lon = -0.1278
-        self._course = 0.0
-        self._speed  = 0.0
+        self._lat = _dms_to_decimal('9°58\'11.7"N', is_lat=True)
+        self._lon = _dms_to_decimal('76°13\'46.9"E', is_lat=False)
+        self._course = 124.0
+        self._speed  = 10.0
         self._running  = False
         self._after_id = None
         self._interval_ms = 1000
@@ -298,15 +334,15 @@ class NMEASimulator(tk.Tk):
 
         tk.Label(pf, text="Latitude :", bg=SURFACE, fg=FG,
                  font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w", pady=3)
-        self._lat_var = tk.StringVar(value=f"{self._lat:.6f}")
-        tk.Entry(pf, textvariable=self._lat_var, width=14,
+        self._lat_var = tk.StringVar(value=_decimal_to_dms(self._lat, is_lat=True))
+        tk.Entry(pf, textvariable=self._lat_var, width=18,
                  bg=OVERLAY, fg=FG, insertbackground=FG,
                  relief="flat", font=("Courier New", 10)).grid(row=0, column=1, padx=(8, 0), pady=3)
 
         tk.Label(pf, text="Longitude:", bg=SURFACE, fg=FG,
                  font=("Segoe UI", 10)).grid(row=1, column=0, sticky="w", pady=3)
-        self._lon_var = tk.StringVar(value=f"{self._lon:.6f}")
-        tk.Entry(pf, textvariable=self._lon_var, width=14,
+        self._lon_var = tk.StringVar(value=_decimal_to_dms(self._lon, is_lat=False))
+        tk.Entry(pf, textvariable=self._lon_var, width=18,
                  bg=OVERLAY, fg=FG, insertbackground=FG,
                  relief="flat", font=("Courier New", 10)).grid(row=1, column=1, padx=(8, 0), pady=3)
 
@@ -319,11 +355,11 @@ class NMEASimulator(tk.Tk):
         cr = tk.Frame(p, bg=SURFACE)
         cr.pack(fill=tk.X, pady=(0, 2))
         tk.Label(cr, text="Course", bg=SURFACE, fg=FG, font=("Segoe UI", 10)).pack(side=tk.LEFT)
-        self._course_lbl = tk.Label(cr, text="  000.0 deg", bg=OVERLAY, fg=YELLOW,
+        self._course_lbl = tk.Label(cr, text=f"  {self._course:05.1f} deg", bg=OVERLAY, fg=YELLOW,
                                     font=("Courier New", 11, "bold"), padx=6, pady=2)
         self._course_lbl.pack(side=tk.RIGHT)
 
-        self._course_var = tk.DoubleVar(value=0.0)
+        self._course_var = tk.DoubleVar(value=self._course)
         tk.Scale(p, from_=0, to=359.9, variable=self._course_var,
                  orient=tk.HORIZONTAL, showvalue=False,
                  bg=SURFACE, fg=FG, troughcolor=OVERLAY,
@@ -333,11 +369,11 @@ class NMEASimulator(tk.Tk):
         sr = tk.Frame(p, bg=SURFACE)
         sr.pack(fill=tk.X, pady=(0, 2))
         tk.Label(sr, text="Speed", bg=SURFACE, fg=FG, font=("Segoe UI", 10)).pack(side=tk.LEFT)
-        self._speed_lbl = tk.Label(sr, text="   0.0 kts", bg=OVERLAY, fg=YELLOW,
+        self._speed_lbl = tk.Label(sr, text=f"  {self._speed:5.1f} kts", bg=OVERLAY, fg=YELLOW,
                                    font=("Courier New", 11, "bold"), padx=6, pady=2)
         self._speed_lbl.pack(side=tk.RIGHT)
 
-        self._speed_var = tk.DoubleVar(value=0.0)
+        self._speed_var = tk.DoubleVar(value=self._speed)
         tk.Scale(p, from_=0, to=30, variable=self._speed_var,
                  orient=tk.HORIZONTAL, showvalue=False, resolution=0.1,
                  bg=SURFACE, fg=FG, troughcolor=OVERLAY,
@@ -347,7 +383,7 @@ class NMEASimulator(tk.Tk):
         # Compass
         self._compass = tk.Canvas(p, width=160, height=180, bg=SURFACE, highlightthickness=0)
         self._compass.pack(pady=(4, 0))
-        self._draw_compass(0.0)
+        self._draw_compass(self._course)
 
         # Options
         self._section(p, "OPTIONS")
@@ -483,8 +519,10 @@ class NMEASimulator(tk.Tk):
 
     def _apply_pos(self):
         try:
-            self._lat = float(self._lat_var.get())
-            self._lon = float(self._lon_var.get())
+            self._lat = _dms_to_decimal(self._lat_var.get(), is_lat=True)
+            self._lon = _dms_to_decimal(self._lon_var.get(), is_lat=False)
+            self._lat_var.set(_decimal_to_dms(self._lat, is_lat=True))
+            self._lon_var.set(_decimal_to_dms(self._lon, is_lat=False))
         except ValueError:
             pass
 
@@ -513,8 +551,8 @@ class NMEASimulator(tk.Tk):
             dt = self._interval_ms / 1000
             self._lat, self._lon = dead_reckon(
                 self._lat, self._lon, self._speed, self._course, dt)
-            self._lat_var.set(f"{self._lat:.6f}")
-            self._lon_var.set(f"{self._lon:.6f}")
+            self._lat_var.set(_decimal_to_dms(self._lat, is_lat=True))
+            self._lon_var.set(_decimal_to_dms(self._lon, is_lat=False))
 
         rmc = gprmc(self._lat, self._lon, self._speed, self._course)
         gga = gpgga(self._lat, self._lon)
